@@ -1,0 +1,23 @@
+# REVIEW.md
+
+Defects found in the starter `app/main.py`, and how they were fixed. Every fix lives in the rewritten `app/main.py`.
+
+| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
+|---|---|---|---|---|
+| 1 | `compute_late_minutes` | Grace test uses floored minutes (`> 10`), so a punch at 09:40:01 computes 10 and returns 0. R2 says it must be late with `late_minutes = 10`. It also builds the shift start with `.replace(hour=…)` on the *local* punch instead of on the IST shift instant. | Punch in at 09:40:01 on a 09:30 shift → starter returns 0, spec says 10. | Compare the real elapsed seconds (`> 600`) and floor minutes since the IST shift start (`secs // 60`). |
+| 2 | `compute_work_hours` | Uses Python `round()`, i.e. banker's rounding (2.005 → 2.0, 2.5 → 2). R4 forbids this. | A shift that works out to exactly x.xx5 rounds the wrong way. | Exact `Decimal(seconds)/3600` quantized with `ROUND_HALF_UP`. |
+| 3 | `compute_overtime` | Ignores the ≥ 30-minute minimum (R3), uses `max(0, …)` so 5 min of overtime is reported as 5, and builds shift end on the record date even for overnight shifts. | Sample "normal full day" (5 min late exit) should be overtime 0, starter returns 5. | Floor minutes past the (possibly next-day) shift end, return them only when ≥ 30. |
+| 4 | `punch_in` | `datetime.fromtimestamp` / `datetime.now()` are **naive local time**; the attendance date is derived from that, so on a non-IST server both the stored instant and `date` are wrong. No overnight-shift handling (R1). Returns naive datetimes, not epoch ms. | Run with `TZ=UTC`: a 21:55 IST punch is dated wrong day. | All instants are UTC-aware, truncated to whole seconds; `date` comes from `compute_attendance_date` in IST with the R1 overnight rule; API returns epoch ms. |
+| 5 | `punch_in` | Unknown `emp_code` is not checked → `KeyError`/500 instead of 404. `status` accepts any string (e.g. `ABSENT`). | POST punch-in with a bogus `emp_code`. | Look up the employee first (404), constrain `status` to `PRESENT/WFH/ON_DUTY`. |
+| 6 | `punch_in` / `create_employee` | Check-then-insert race: two concurrent requests both pass `find_one` and both insert. No unique index existed. | Fire two identical punch-ins / creates at once → two records or two 201s. | Unique indexes `(emp_code, date)` and `emp_code`; the loser raises `DuplicateKeyError` → 409. |
+| 7 | `create_employee` | `created_at` is `datetime.now()` (naive local), not the server UTC clock; `shift_start == shift_end` is accepted; concurrent duplicate codes both persist. | Create with `shift_start == shift_end`, or create `EMP0001` twice concurrently. | UTC `created_at`, 422 when the shifts are equal, 409 via the unique index. |
+| 8 | `list_employees` | `skip = page * page_size` is off-by-one — page 1 skips a whole page. `total` counts the *whole* collection, ignoring `department`. Not sorted. | `GET /employees?page=1` returns nothing; `?department=Sales` shows the wrong `total`. | `skip = (page-1)*page_size`, count with the same filter, `.sort("emp_code", 1)`. |
+| 9 | `list_attendance` | `list(db…find(q))` loads the **entire** collection into memory and sorts in Python — explicitly forbidden at ~100k records. No `date_from > date_to` check. Adds an `id` field that is not in the schema. | Point it at 100k rows, or `date_from=2026-08-01&date_to=2026-07-01`. | Filter/count/sort/skip/limit pushed into MongoDB with the `date_emp` index; 422 on inverted range. |
+| 10 | `health` | Returns `{"status":"ok"}` unconditionally; spec requires 503 when Mongo is down. | Stop MongoDB and call `/health`. | `client.admin.command("ping")` inside try/except → 503. |
+| 11 | missing endpoints | `punch-out`, `PATCH /attendance/{emp_code}/{date}` and all five analytics + `/admin/explain` were TODO. | Any call to them returns 404 from FastAPI. | Implemented all of them, with the analytics as single MongoDB aggregations. |
+| 12 | response shape | Endpoints returned raw BSON (`_id`, naive datetimes, extra `id`). | Response contains `_id` / non-ms timestamps and fails the contract. | A single `record_out` / `employee_out` converts BSON dates to epoch ms and drops `_id`. |
+
+**Looked at and not considered defects:**
+- The nine sample documents omit `half_day`/`history` (legacy docs) — that is intended by DATA_MODEL.md; the code defaults them (`or 0` / `bool(…, False)` / `or []`) rather than treating them as bugs.
+- Weekday analysis only needs `isoweekday`/`$dayOfWeek`; no holiday calendar is required (R7), so none was added.
+- The starter's overall file layout and `.env` loading are fine and were kept.

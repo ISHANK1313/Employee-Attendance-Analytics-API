@@ -1,0 +1,27 @@
+# Ignore everything by default...
+*
+
+# ...except the files the assignment asks to submit.
+!.gitignore
+!.gitattributes
+!README.md
+!REVIEW.md
+!DECISIONS.md
+!requirements.txt
+!app/
+!app/*.py
+
+# But never the interpreter cache inside app/
+__pycache__/
+*.py[cod]
+
+# Local tooling that must never be pushed.
+.venv/
+venv/
+.env
+.env.*
+.mimosa/
+.claude/
+test_app.py
+sample_seed.py
+sample_data/
